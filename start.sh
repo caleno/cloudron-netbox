@@ -1,79 +1,82 @@
 #!/bin/bash
 set -eu
 
-# --- 1. Map Cloudron Postgres addon to NetBox DB vars ---
+# --------------------------------------------
+# Unit runtime + config in /app/data
+# --------------------------------------------
+UNIT_DIR="/app/data/opt/unit"
+mkdir -p "${UNIT_DIR}" "${UNIT_DIR}/state" "${UNIT_DIR}/tmp"
+
+# On first run, seed the Unit config from the original read-only one
+if [ ! -f "${UNIT_DIR}/nginx-unit.json" ]; then
+  cp /etc/unit/nginx-unit.json "${UNIT_DIR}/nginx-unit.json"
+fi
+
+# Make sure Unit can write here
+chown -R unit:root "${UNIT_DIR}" || true
+
+# Export for launch-netbox.sh
+export UNIT_DIR
+export UNIT_CONFIG="${UNIT_DIR}/nginx-unit.json"
+export UNIT_SOCKET="${UNIT_DIR}/unit.sock"
+
+# --- 1. Map Cloudron Postgres addon -> NetBox DB vars ---
 
 export DB_HOST="${CLOUDRON_POSTGRESQL_HOST}"
 export DB_NAME="${CLOUDRON_POSTGRESQL_DATABASE}"
 export DB_USER="${CLOUDRON_POSTGRESQL_USERNAME}"
 export DB_PASSWORD="${CLOUDRON_POSTGRESQL_PASSWORD}"
 
-# --- 2. Map Cloudron Redis addon to NetBox Redis vars ---
+# --- 2. Map Cloudron Redis addon -> NetBox Redis vars ---
 
 export REDIS_HOST="${CLOUDRON_REDIS_HOST}"
 export REDIS_PORT="${CLOUDRON_REDIS_PORT}"
 export REDIS_PASSWORD="${CLOUDRON_REDIS_PASSWORD:-}"
 
+# Use same Redis instance for cache but different DB index
+export REDIS_DATABASE="${REDIS_DATABASE:-0}"
+export REDIS_CACHE_HOST="${REDIS_HOST}"
+export REDIS_CACHE_PORT="${REDIS_PORT}"
+export REDIS_CACHE_PASSWORD="${REDIS_PASSWORD}"
+export REDIS_CACHE_DATABASE="${REDIS_CACHE_DATABASE:-1}"
+
 # --- 3. Secret key & allowed hosts ---
 
-# Use a stable SECRET_KEY across restarts – Cloudron will typically keep env vars
-# constant; as a fallback we derive one from the app id.
 if [ -z "${SECRET_KEY:-}" ]; then
-  export SECRET_KEY="$(echo "${CLOUDRON_APP_ORIGIN:-netbox}" | sha256sum | cut -c1-50)"
+  # Derive a stable-ish secret key from the Cloudron app origin/domain
+  SECRET_SOURCE="${CLOUDRON_APP_ORIGIN:-${CLOUDRON_APP_DOMAIN:-netbox}}"
+  export SECRET_KEY="$(printf '%s' "$SECRET_SOURCE" | sha256sum | cut -c1-50)"
 fi
 
-# ALLOWED_HOSTS is set via env in the official image; Cloudron provides app domain.
+# Cloudron gives us the app’s domain
 export ALLOWED_HOSTS="${CLOUDRON_APP_DOMAIN:-*}"
 
-# --- 4. Render netbox.env from template ---
+# --- 4. Persistent files under /app/data ---
 
-envsubst < /app/netbox.env.template > /opt/netbox/netbox.env
+export MEDIA_ROOT="/app/data/media"
+mkdir -p "$MEDIA_ROOT"
 
-# Make sure media dir exists and is in localstorage (Cloudron mounts /run/local).
-mkdir -p /run/local/media
-chown -R 101:101 /run/local/media || true  # 101 is often the netbox user in image
-export MEDIA_ROOT=/run/local/media
+# Ensure persistent dirs
+mkdir -p /app/data/media /app/data/scripts /app/data/reports /app/data/logs
+chown -R 101:101 /app/data   # 101 is the netbox user in the official image
 
-# Also export MEDIA_ROOT to env file for NetBox
-echo "MEDIA_ROOT=${MEDIA_ROOT}" >> /opt/netbox/netbox.env
+# Tell NetBox to use those
+export MEDIA_ROOT=/app/data/media
+export SCRIPTS_ROOT=/app/data/scripts
+export REPORTS_ROOT=/app/data/reports
 
-# --- 5. Prepare database & static files ---
 
-# The official image has manage.py & venv in /opt/netbox
-. /opt/netbox/venv/bin/activate
+# Make sure Unit/NetBox user can write here (unit user in image is usually uid 101)
+chown -R 101:101 /app/data || true
 
-# Migrate & collectstatic
-/opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py migrate --noinput
-/opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py collectstatic --noinput
+# --- 5. Enable LDAP only if Cloudron LDAP is actually wired
+if [ -n "${CLOUDRON_LDAP_URL:-}" ]; then
+    export REMOTE_AUTH_BACKEND=netbox.authentication.LDAPBackend
+    # Optional flag for your own logic
+    export CLOUDRON_LDAP_ENABLED=true
+fi
 
-# --- 6. Create initial superuser if missing ---
 
-ADMIN_USER="${NETBOX_ADMIN_USER:-admin}"
-ADMIN_EMAIL="${NETBOX_ADMIN_EMAIL:-[email protected]}"
-ADMIN_PASSWORD="${NETBOX_ADMIN_PASSWORD:-changeme}"
+# --- 6. Hand off to upstream entrypoint (migrations, superuser, then unitd) ---
 
-cat << 'PYCODE' | /opt/netbox/venv/bin/python /opt/netbox/netbox/manage.py shell
-from django.contrib.auth import get_user_model
-import os
-
-User = get_user_model()
-username = os.environ.get("ADMIN_USER", "admin")
-email = os.environ.get("ADMIN_EMAIL", "[email protected]")
-password = os.environ.get("ADMIN_PASSWORD", "changeme")
-
-if not User.objects.filter(username=username).exists():
-    print(f"Creating NetBox superuser '{username}'")
-    User.objects.create_superuser(username=username, email=email, password=password)
-else:
-    print(f"NetBox superuser '{username}' already exists")
-PYCODE
-
-# --- 7. Start NetBox (gunicorn via official entrypoint) ---
-
-# The official image normally uses /opt/netbox/docker-entrypoint.sh.
-# We just call the same command it would run by default: gunicorn on 0.0.0.0:8080.
-exec /opt/netbox/venv/bin/gunicorn \
-  --bind 0.0.0.0:8080 \
-  --workers 3 \
-  netbox.wsgi
-
+exec /opt/netbox/docker-entrypoint.sh "$@"

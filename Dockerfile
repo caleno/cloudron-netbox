@@ -1,20 +1,30 @@
 FROM netboxcommunity/netbox:latest
 
-# Cloudron runs as cloudron user; NetBox image already has its own structure.
-# We'll just add our entrypoint script + env templating.
-
 USER root
-WORKDIR /opt/netbox
 
-# Copy helper files
+## Isntall LDAP support using django-auth-ldap
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        libldap2-dev libsasl2-dev libssl-dev && \
+    pip install django-auth-ldap && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY ldap_config.py /etc/netbox/config/ldap/ldap_config.py
+
+COPY nginx-unit.json /etc/unit/nginx-unit.json
+
+# Our small wrapper that maps Cloudron env vars -> NetBox vars
 COPY start.sh /app/start.sh
-COPY netbox.env.template /app/netbox.env.template
+RUN chmod +x /app/start.sh 
 
-RUN chmod +x /app/start.sh
+COPY launch-netbox.sh /opt/netbox/launch-netbox.sh
+RUN chmod +x /opt/netbox/launch-netbox.sh
 
-# Cloudron will inject these env vars at runtime (postgres, redis, domain, etc.)
-# We do not set them here to keep the image generic.
+WORKDIR /opt/netbox/netbox
 
 EXPOSE 8080
 
-CMD ["/app/start.sh"]
+# IMPORTANT:
+# - Keep upstream ENTRYPOINT (tini)
+# - Only override CMD to call our wrapper, which then calls docker-entrypoint.sh
+CMD ["/app/start.sh", "/app/launch-netbox.sh"]

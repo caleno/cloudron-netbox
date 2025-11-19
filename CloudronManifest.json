@@ -4,7 +4,7 @@
   "author": "Your Name",
   "description": "NetBox – IPAM/DCIM on Cloudron",
   "tagline": "Network Source of Truth",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "manifestVersion": 2,
   "website": "https://github.com/netbox-community/netbox",
   "healthCheckPath": "/",
@@ -12,8 +12,10 @@
   "addons": {
     "localstorage": {},
     "postgresql": {},
-    "redis": {}
+    "redis": {},
+    "ldap": {}
   },
+  "optionalSso": true,
   "memoryLimit": 1073741824,
   "changelog": "Initial experimental NetBox package using official docker image",
   "tags": [
@@ -23,4 +25,3 @@
     "network"
   ]
 }
-
