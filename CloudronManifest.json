@@ -1,0 +1,19 @@
+{
+  "id": "io.netbox.cloudron",
+  "title": "NetBox",
+  "author": "You",
+  "description": "Network Source of Truth and DCIM",
+  "tagline": "NetBox on Cloudron",
+  "version": "0.1.0",
+  "healthCheckPath": "/",
+  "httpPort": 8000,
+  "manifestVersion": 2,
+  "addons": {
+    "postgresql": {},
+    "redis": {},
+    "localstorage": {}
+  },
+  "memoryLimit": 1073741824,
+  "icon": "logo.png"
+}
+
